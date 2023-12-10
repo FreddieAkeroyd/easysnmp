@@ -1,6 +1,13 @@
 /* This is the main interface for the EasySNMP python module.
  */
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif /* WIN32_LEAN_AND_MEAN */
+#include <winsock2.h>
+#endif /* _WIN32 */
+
 #include <Python.h>
 
 /*
@@ -29,7 +36,10 @@
 #include <net-snmp/library/snmp_api.h>
 #include <net-snmp/library/snmpusm.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <arpa/inet.h>
+#include <netdb.h>
+#endif /* ndef _WIN32 */
 #include <errno.h>
 #include <stdio.h>
 #include <fcntl.h>
@@ -37,7 +47,6 @@
 #ifdef I_SYS_TIME
 #include <sys/time.h>
 #endif
-#include <netdb.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -246,6 +255,16 @@ void __libraries_init()
     }
     have_inited = 1;
 
+#ifdef _WIN32
+    {
+        WSADATA wsaData;
+        int ret = WSAStartup(MAKEWORD(2,2), &wsaData);
+        if (ret != 0) {
+            printf("WINSOCK init failed\n");
+        }
+    }
+#endif /* _WIN32 */
+
     snmp_set_quick_print(1);
 
     /* completely disable logging otherwise it will default to stderr */
@@ -261,7 +280,7 @@ void __libraries_init()
                        NETSNMP_OID_OUTPUT_SUFFIX);
 }
 
-void __libraries_free()
+static void __libraries_free(void* arg)
 {
     snmp_shutdown(APPNAME);
 }
@@ -444,7 +463,7 @@ static int __translate_asn_type(int type)
     case ASN_COUNTER64:
         return TYPE_COUNTER64;
     default:
-        py_log_msg(ERROR, "translate_asn_type: unhandled asn type (%d)",
+        py_log_msg(ELOG_ERROR, "translate_asn_type: unhandled asn type (%d)",
                    type);
 
         return TYPE_OTHER;
@@ -578,7 +597,7 @@ static int __snprint_value(char *buf, size_t buf_len,
 
         case ASN_NSAP:
         default:
-            py_log_msg(ERROR, "snprint_value: asn type not handled %d",
+            py_log_msg(ELOG_ERROR, "snprint_value: asn type not handled %d",
                        var->type);
         }
     }
@@ -700,7 +719,7 @@ static int __get_type_str(int type, char *str, int log_error)
         strcpy(str, "");
         if (log_error)
         {
-            py_log_msg(ERROR, "unspported type found: %d", type);
+            py_log_msg(ELOG_ERROR, "unspported type found: %d", type);
         }
         return FAILURE;
     }
@@ -1089,17 +1108,17 @@ static int __add_var_val_str(netsnmp_pdu *pdu, oid *name, int name_length,
     case TYPE_GAUGE:
     case TYPE_UNSIGNED32:
         vars->type = ASN_GAUGE;
-        goto UINT;
+        goto UINT_LABEL;
     case TYPE_COUNTER:
         vars->type = ASN_COUNTER;
-        goto UINT;
+        goto UINT_LABEL;
     case TYPE_TIMETICKS:
         vars->type = ASN_TIMETICKS;
-        goto UINT;
+        goto UINT_LABEL;
     case TYPE_UINTEGER:
         vars->type = ASN_UINTEGER;
 
-    UINT:
+    UINT_LABEL:
 
         vars->val.integer = malloc(sizeof(long));
         if (val)
@@ -1116,16 +1135,16 @@ static int __add_var_val_str(netsnmp_pdu *pdu, oid *name, int name_length,
 
     case TYPE_OCTETSTR:
         vars->type = ASN_OCTET_STR;
-        goto OCT;
+        goto OCT_LABEL;
 
     case TYPE_BITSTRING:
         vars->type = ASN_OCTET_STR;
-        goto OCT;
+        goto OCT_LABEL;
 
     case TYPE_OPAQUE:
         vars->type = ASN_OCTET_STR;
 
-    OCT:
+    OCT_LABEL:
 
         vars->val.string = malloc(len);
         vars->val_len = len;
@@ -1340,7 +1359,7 @@ retry:
                     STR_BUF_SIZE);
             *err_num = (int)(*response)->errstat;
             *err_ind = (*response)->errindex;
-            py_log_msg(DEBUG, "sync PDU: %s", err_str);
+            py_log_msg(ELOG_DEBUG, "sync PDU: %s", err_str);
 
             PyErr_SetString(EasySNMPError, err_str);
             break;
@@ -1351,7 +1370,7 @@ retry:
     case STAT_ERROR:
         snmp_sess_error(ss, err_num, err_ind, &tmp_err_str);
         strlcpy(err_str, tmp_err_str, STR_BUF_SIZE);
-        py_log_msg(DEBUG, "sync PDU: %s", err_str);
+        py_log_msg(ELOG_DEBUG, "sync PDU: %s", err_str);
 
         // SNMP v3 doesn't quite raise timeouts correctly, so we correct it
         if (strncmp(err_str, "Timeout", 7) == 0)
@@ -1368,7 +1387,7 @@ retry:
     default:
         strcat(err_str, "send_sync_pdu: unknown status");
         *err_num = ss->s_snmp_errno;
-        py_log_msg(DEBUG, "sync PDU: %s", err_str);
+        py_log_msg(ELOG_DEBUG, "sync PDU: %s", err_str);
 
         break;
     }
@@ -1574,8 +1593,12 @@ static PyObject *create_session_capsule(SnmpSession *session)
     /* create a long lived handle from throwaway session object */
     if (!(handle = snmp_sess_open(session)))
     {
-        PyErr_SetString(EasySNMPConnectionError,
-                        "couldn't create SNMP handle");
+        int liberr, syserr;
+        char* errstr = NULL;
+        snmp_error(session, &liberr, &syserr, &errstr);
+        PyErr_Format(EasySNMPConnectionError,
+                 "couldn't create SNMP handle: %s", errstr);
+        free(errstr);
         goto done;
     }
     /*
@@ -1893,7 +1916,7 @@ static PyObject *netsnmp_create_session_tunneled(PyObject *self,
             netsnmp_container_find("transport_configuration:fifo");
         if (!session.transport_configuration)
         {
-            py_log_msg(ERROR, "failed to initialize the transport "
+            py_log_msg(ELOG_ERROR, "failed to initialize the transport "
                               "configuration container");
             goto done;
         }
@@ -2170,7 +2193,7 @@ static PyObject *netsnmp_get(PyObject *self, PyObject *args)
              * sanity check for snmp v2/v3: no more varbinds to inspect;
              * this should throw an exception.
              */
-            py_log_msg(DEBUG,
+            py_log_msg(ELOG_DEBUG,
                        "netsnmp_get: response had less vars compared to varlist");
             break;
         }
@@ -2181,7 +2204,7 @@ static PyObject *netsnmp_get(PyObject *self, PyObject *args)
         {
             if (!PyObject_HasAttrString(varbind, "oid"))
             {
-                py_log_msg(DEBUG, "netsnmp_get: bad varbind (%d)",
+                py_log_msg(ELOG_DEBUG, "netsnmp_get: bad varbind (%d)",
                            varlist_ind);
                 // Py_XDECREF(varbind); Double DECREF?
             }
@@ -2207,7 +2230,7 @@ static PyObject *netsnmp_get(PyObject *self, PyObject *args)
                                                    vars->name,
                                                    vars->name_length);
 
-            py_log_msg(DEBUG, "netsnmp_get: str_bufp: %s:%lu:%lu",
+            py_log_msg(ELOG_DEBUG, "netsnmp_get: str_bufp: %s:%lu:%lu",
                        str_bufp, str_buf_len, out_len);
 
             /* clamp value */
@@ -2218,15 +2241,15 @@ static PyObject *netsnmp_get(PyObject *self, PyObject *args)
             if (__is_leaf(tp))
             {
                 getlabel_flag &= ~NON_LEAF_NAME;
-                py_log_msg(DEBUG, "netsnmp_get: is_leaf: %d", tp->type);
+                py_log_msg(ELOG_DEBUG, "netsnmp_get: is_leaf: %d", tp->type);
             }
             else
             {
                 getlabel_flag |= NON_LEAF_NAME;
-                py_log_msg(DEBUG, "netsnmp_get: !is_leaf: %d", tp->type);
+                py_log_msg(ELOG_DEBUG, "netsnmp_get: !is_leaf: %d", tp->type);
             }
 
-            py_log_msg(DEBUG, "netsnmp_get: str_buf: %s", str_buf);
+            py_log_msg(ELOG_DEBUG, "netsnmp_get: str_buf: %s", str_buf);
 
             __get_label_iid((char *)str_buf, &tag, &iid, getlabel_flag);
 
@@ -2249,7 +2272,7 @@ static PyObject *netsnmp_get(PyObject *self, PyObject *args)
         }
         else
         {
-            py_log_msg(DEBUG, "netsnmp_get: bad varbind (%d)", varlist_ind);
+            py_log_msg(ELOG_DEBUG, "netsnmp_get: bad varbind (%d)", varlist_ind);
             Py_XDECREF(varbind);
         }
 
@@ -2397,7 +2420,7 @@ static PyObject *netsnmp_getnext(PyObject *self, PyObject *args)
                                    best_guess);
                 }
 
-                py_log_msg(DEBUG,
+                py_log_msg(ELOG_DEBUG,
                            "netsnmp_getnext: filling request: %s:%s:%d:%d",
                            tag, iid, oid_arr_len, best_guess);
 
@@ -2544,19 +2567,19 @@ static PyObject *netsnmp_getnext(PyObject *self, PyObject *args)
                 if (__is_leaf(tp))
                 {
                     getlabel_flag &= ~NON_LEAF_NAME;
-                    py_log_msg(DEBUG, "netsnmp_getnext: is_leaf: %d", tp->type);
+                    py_log_msg(ELOG_DEBUG, "netsnmp_getnext: is_leaf: %d", tp->type);
                 }
                 else
                 {
                     getlabel_flag |= NON_LEAF_NAME;
-                    py_log_msg(DEBUG, "netsnmp_getnext: !is_leaf: %d", tp->type);
+                    py_log_msg(ELOG_DEBUG, "netsnmp_getnext: !is_leaf: %d", tp->type);
                 }
 
-                py_log_msg(DEBUG, "netsnmp_getnext: str_buf: %s", str_buf);
+                py_log_msg(ELOG_DEBUG, "netsnmp_getnext: str_buf: %s", str_buf);
 
                 __get_label_iid((char *)str_buf, &tag, &iid, getlabel_flag);
 
-                py_log_msg(DEBUG, "netsnmp_getnext: filling response: %s:%s",
+                py_log_msg(ELOG_DEBUG, "netsnmp_getnext: filling response: %s:%s",
                            tag, iid);
 
                 py_netsnmp_attr_set_string(varbind, "oid", tag, STRLEN(tag));
@@ -2579,7 +2602,7 @@ static PyObject *netsnmp_getnext(PyObject *self, PyObject *args)
             {
                 if (!PyObject_HasAttrString(varbind, "oid"))
                 {
-                    py_log_msg(DEBUG, "netsnmp_get: bad varbind (%d)",
+                    py_log_msg(ELOG_DEBUG, "netsnmp_get: bad varbind (%d)",
                                varlist_ind);
                     // Py_XDECREF(varbind); /* Double decref? */
                 }
@@ -2592,7 +2615,7 @@ static PyObject *netsnmp_getnext(PyObject *self, PyObject *args)
             }
             else
             {
-                py_log_msg(DEBUG, "netsnmp_getnext: bad varbind (%d)",
+                py_log_msg(ELOG_DEBUG, "netsnmp_getnext: bad varbind (%d)",
                            varlist_ind);
             }
             Py_XDECREF(varbind);
@@ -2790,7 +2813,7 @@ static PyObject *netsnmp_walk(PyObject *self, PyObject *args)
 
             if (oid_arr_len[varlist_ind])
             {
-                py_log_msg(DEBUG, "netsnmp_walk: filling request: %s:%s:%d:%d",
+                py_log_msg(ELOG_DEBUG, "netsnmp_walk: filling request: %s:%s:%d:%d",
                            tag, iid, oid_arr_len[varlist_ind], best_guess);
 
                 snmp_add_null_var(pdu, oid_arr[varlist_ind],
@@ -2980,20 +3003,20 @@ static PyObject *netsnmp_walk(PyObject *self, PyObject *args)
                         if (__is_leaf(tp))
                         {
                             getlabel_flag &= ~NON_LEAF_NAME;
-                            py_log_msg(DEBUG, "netsnmp_walk: is_leaf: %d", tp->type);
+                            py_log_msg(ELOG_DEBUG, "netsnmp_walk: is_leaf: %d", tp->type);
                         }
                         else
                         {
                             getlabel_flag |= NON_LEAF_NAME;
-                            py_log_msg(DEBUG, "netsnmp_walk: !is_leaf: %d", tp->type);
+                            py_log_msg(ELOG_DEBUG, "netsnmp_walk: !is_leaf: %d", tp->type);
                         }
 
-                        py_log_msg(DEBUG, "netsnmp_walk: str_buf: %s", str_buf);
+                        py_log_msg(ELOG_DEBUG, "netsnmp_walk: str_buf: %s", str_buf);
 
                         __get_label_iid((char *)str_buf, &tag, &iid,
                                         getlabel_flag);
 
-                        py_log_msg(DEBUG,
+                        py_log_msg(ELOG_DEBUG,
                                    "netsnmp_walk: filling response: %s:%s",
                                    tag, iid);
 
@@ -3020,7 +3043,7 @@ static PyObject *netsnmp_walk(PyObject *self, PyObject *args)
                     }
                     else
                     {
-                        py_log_msg(DEBUG, "netsnmp_walk: bad varbind (%d)",
+                        py_log_msg(ELOG_DEBUG, "netsnmp_walk: bad varbind (%d)",
                                    varlist_ind);
                     }
                     Py_XDECREF(varbind);
@@ -3323,15 +3346,15 @@ static PyObject *netsnmp_getbulk(PyObject *self, PyObject *args)
                         if (__is_leaf(tp))
                         {
                             getlabel_flag &= ~NON_LEAF_NAME;
-                            py_log_msg(DEBUG, "netsnmp_getbulk: is_leaf: %d", tp->type);
+                            py_log_msg(ELOG_DEBUG, "netsnmp_getbulk: is_leaf: %d", tp->type);
                         }
                         else
                         {
                             getlabel_flag |= NON_LEAF_NAME;
-                            py_log_msg(DEBUG, "netsnmp_getbulk: !is_leaf: %d", tp->type);
+                            py_log_msg(ELOG_DEBUG, "netsnmp_getbulk: !is_leaf: %d", tp->type);
                         }
 
-                        py_log_msg(DEBUG, "netsnmp_getbulk: str_buf: %s", str_buf);
+                        py_log_msg(ELOG_DEBUG, "netsnmp_getbulk: str_buf: %s", str_buf);
 
                         __get_label_iid((char *)str_buf, &tag, &iid,
                                         getlabel_flag);
@@ -3452,7 +3475,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
     int nonrepeaters;
     int maxrepetitions;
 
-    py_log_msg(DEBUG, "netsnmp_bulkwalk: Starting");
+    py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: Starting");
 
     if (args)
     {
@@ -3462,7 +3485,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
             goto done;
         }
 
-        py_log_msg(DEBUG, "netsnmp_bulkwalk: nonreps (%d) max_reps (%d)",
+        py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: nonreps (%d) max_reps (%d)",
                    nonrepeaters, maxrepetitions);
 
         if (!varlist)
@@ -3536,7 +3559,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
         }
 
         /* get the initial oids */
-        py_log_msg(DEBUG, "netsnmp_bulkwalk: Getting initial oids");
+        py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: Getting initial oids");
         varlist_ind = 0;
         varlist_iter = PyObject_GetIter(varlist);
         while (varlist_iter && (varbind = PyIter_Next(varlist_iter)))
@@ -3553,7 +3576,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
 
                 // initial_oid_str_arr[varlist_ind] = oid_str_arr[varlist_ind];
 
-                py_log_msg(DEBUG,
+                py_log_msg(ELOG_DEBUG,
                            "netsnmp_bulkwalk: Initial oid(%s) oid_idx(%s)",
                            oid_str_arr[varlist_ind],
                            oid_idx_str_arr[varlist_ind]);
@@ -3640,7 +3663,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
             goto done;
         }
 
-        py_log_msg(DEBUG, "netsnmp_bulkwalk: Starting bulk walk request");
+        py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: Starting bulk walk request");
         for (varlist_ind = 0; varlist_ind < varlist_len; varlist_ind++)
         {
             pdu = snmp_pdu_create(SNMP_MSG_GETBULK);
@@ -3651,7 +3674,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
             notdone = 1;
             while (notdone)
             {
-                py_log_msg(DEBUG, "netsnmp_bulkwalk: Sending pdu req");
+                py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: Sending pdu req");
                 status = __send_sync_pdu(ss, pdu, &response, retry_nosuch,
                                          err_str, &err_num, &err_ind, NULL);
 
@@ -3685,7 +3708,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
                             (memcmp(oid_arr[varlist_ind], vars->name,
                                     oid_arr_len[varlist_ind] * sizeof(oid)) != 0))
                         {
-                            py_log_msg(DEBUG,
+                            py_log_msg(ELOG_DEBUG,
                                        "netsnmp_bulkwalk: encountered end condition "
                                        "(next subtree iteration out of scope)");
                             notdone = 0;
@@ -3696,7 +3719,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
                             (vars->type == SNMP_NOSUCHOBJECT) ||
                             (vars->type == SNMP_NOSUCHINSTANCE))
                         {
-                            py_log_msg(DEBUG,
+                            py_log_msg(ELOG_DEBUG,
                                        "netsnmp_bulkwalk: encountered end condition "
                                        "(ENDOFMIBVIEW, NOSUCHOBJECT, NO SUCH "
                                        "INSTANCE)");
@@ -3724,19 +3747,19 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
                             if (__is_leaf(tp))
                             {
                                 getlabel_flag &= ~NON_LEAF_NAME;
-                                py_log_msg(DEBUG,
+                                py_log_msg(ELOG_DEBUG,
                                            "netsnmp_bulkwalk: is_leaf: %d",
                                            tp->type);
                             }
                             else
                             {
                                 getlabel_flag |= NON_LEAF_NAME;
-                                py_log_msg(DEBUG,
+                                py_log_msg(ELOG_DEBUG,
                                            "netsnmp_bulkwalk: !is_leaf: %d",
                                            tp->type);
                             }
 
-                            py_log_msg(DEBUG, "netsnmp_bulkwalk: str_buf: %s",
+                            py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: str_buf: %s",
                                        str_buf);
 
                             /*
@@ -3754,7 +3777,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
                                             &oid_idx_str_arr[varlist_ind],
                                             getlabel_flag);
 
-                            py_log_msg(DEBUG,
+                            py_log_msg(ELOG_DEBUG,
                                        "netsnmp_bulkwalk: filling response: %s:%s",
                                        oid_str_arr[varlist_ind],
                                        oid_idx_str_arr[varlist_ind]);
@@ -3786,7 +3809,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
                         }
                         else
                         {
-                            py_log_msg(DEBUG,
+                            py_log_msg(ELOG_DEBUG,
                                        "netsnmp_bulkwalk: bad varbind (%d)",
                                        varlist_ind);
                         }
@@ -3804,7 +3827,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
                         // Move on to next
                         vars = vars->next_variable;
                     }
-                    py_log_msg(DEBUG,
+                    py_log_msg(ELOG_DEBUG,
                                "netsnmp_bulkwalk: Finished reading all "
                                "variables for req");
                 }
@@ -3816,7 +3839,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
                 }
             }
         }
-        py_log_msg(DEBUG, "netsnmp_bulkwalk: Ending bulk walk request");
+        py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: Ending bulk walk request");
 
         /* Reset the library's behavior for numeric/symbolic OID's. */
         netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID,
@@ -3830,7 +3853,7 @@ static PyObject *netsnmp_bulkwalk(PyObject *self, PyObject *args)
     }
 
 done:
-    py_log_msg(DEBUG, "netsnmp_bulkwalk: Starting cleanup");
+    py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: Starting cleanup");
     Py_XDECREF(varbinds);
     Py_XDECREF(sess_ptr);
     Py_XDECREF(err_bytes);
@@ -3845,7 +3868,7 @@ done:
     SAFE_FREE(oid_arr);
     SAFE_FREE(oid_str_arr);
     SAFE_FREE(oid_idx_str_arr);
-    py_log_msg(DEBUG, "netsnmp_bulkwalk: End cleanup");
+    py_log_msg(ELOG_DEBUG, "netsnmp_bulkwalk: End cleanup");
 
     if (error)
     {
@@ -4029,7 +4052,7 @@ static PyObject *netsnmp_set(PyObject *self, PyObject *args)
 
                 if (status == FAILURE)
                 {
-                    py_log_msg(ERROR, "set: adding variable/value to PDU");
+                    py_log_msg(ELOG_ERROR, "set: adding variable/value to PDU");
                 }
 
                 /* release reference when done */
@@ -4163,23 +4186,23 @@ static void py_log_msg(int log_level, char *printf_fmt, ...)
     /* call function depending on loglevel */
     switch (log_level)
     {
-    case INFO:
+    case ELOG_INFO:
         pval = PyObject_CallMethod(PyLogger, "info", "O", log_msg);
         break;
 
-    case WARNING:
+    case ELOG_WARNING:
         pval = PyObject_CallMethod(PyLogger, "warn", "O", log_msg);
         break;
 
-    case ERROR:
+    case ELOG_ERROR:
         pval = PyObject_CallMethod(PyLogger, "error", "O", log_msg);
         break;
 
-    case DEBUG:
+    case ELOG_DEBUG:
         pval = PyObject_CallMethod(PyLogger, "debug", "O", log_msg);
         break;
 
-    case EXCEPTION:
+    case ELOG_EXCEPTION:
         pval = PyObject_CallMethod(PyLogger, "exception", "O", log_msg);
         break;
 
@@ -4346,7 +4369,7 @@ PyMODINIT_FUNC initinterface(void)
     /* initialise the netsnmp library */
     __libraries_init();
 
-    py_log_msg(DEBUG, "initialised easysnmp.interface");
+    py_log_msg(ELOG_DEBUG, "initialised easysnmp.interface");
 
 #if PY_MAJOR_VERSION >= 3
     return interface_module;

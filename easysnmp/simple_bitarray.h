@@ -219,9 +219,10 @@ static inline void bitarray_print_base16(bitarray *ba)
     bitarray i;
     size_t num_limbs = bitarray_num_limbs(ba);
 
-    printf("DEBUG numbits=%lu\n", (unsigned long) ba[0]);
-    printf("DEBUG sizeof(limb)=%lu\n", sizeof(ba[0]));
-    printf("DEBUG num_limbs=%lu\n", num_limbs);
+    // could use %zu ?
+    printf("DEBUG numbits=%lu\n", (unsigned long)ba[0]);
+    printf("DEBUG sizeof(limb)=%lu\n", (unsigned long)sizeof(ba[0]));
+    printf("DEBUG num_limbs=%lu\n", (unsigned long)num_limbs);
     for (i = 0; i <= num_limbs; i++)
     {
         unsigned char c;

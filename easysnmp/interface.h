@@ -90,11 +90,11 @@ struct session_capsule_ctx
 
 enum
 {
-    INFO,
-    WARNING,
-    ERROR,
-    DEBUG,
-    EXCEPTION
+    ELOG_INFO,
+    ELOG_WARNING,
+    ELOG_ERROR,
+    ELOG_DEBUG,
+    ELOG_EXCEPTION
 };
 
 /******************************************************************************

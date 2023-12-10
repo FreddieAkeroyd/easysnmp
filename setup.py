@@ -7,13 +7,16 @@ from distutils.command import build
 from setuptools import setup, Extension
 from setuptools.command.test import test as TestCommand
 from setuptools import dist
+import os
 
 # Determine if a base directory has been provided with the --basedir option
 basedir = None
 in_tree = False
 # Add compiler flags if debug is set
-compile_args = []
-link_args = []
+#compile_args = [ '-D_CRT_SECURE_NO_WARNINGS', '-Od', '-RTC1', '-Z7' ]
+compile_args = [ '-D_CRT_SECURE_NO_WARNINGS' ]
+#link_args = [ '-DEBUG' ]
+link_args = [  ]
 for arg in argv:
     if arg.startswith('--debug'):
         # Note from GCC manual:
@@ -41,7 +44,8 @@ if in_tree:
 
 # Otherwise, we use the system-installed SNMP libraries
 else:
-    netsnmp_libs = check_output('net-snmp-config --libs', shell=True).decode()
+    #netsnmp_libs = check_output('net-snmp-config --libs', shell=True).decode()
+    netsnmp_libs = ""
 
     pass_next = False
     has_arg = ('-framework',)
@@ -57,9 +61,14 @@ else:
             pass_next = False
 
     # link_args += [flag for flag in s_split(netsnmp_libs) if flag[:2] == '-f']
+    netsnmp_dir = r'C:\Instrument\Apps\EPICS\support\NET-SNMP\master'
+    openssl_dir = r'C:\Instrument\Apps\EPICS\support\OpenSSL\master'
     libs = [flag[2:] for flag in s_split(netsnmp_libs) if flag[:2] == '-l']
     libdirs = [flag[2:] for flag in s_split(netsnmp_libs) if flag[:2] == '-L']
     incdirs = []
+    libs = [ 'netsnmp', 'ws2_32' ]
+    libdirs = [ os.path.join(netsnmp_dir,"lib","windows-x64"), os.path.join(openssl_dir,"lib","windows-x64") ]
+    incdirs = [ os.path.join(netsnmp_dir,"install","include"), os.path.join(openssl_dir,"include") ]
 
     if platform == 'darwin':  # OS X
         brew = check_output('brew info net-snmp', shell=True).decode()
