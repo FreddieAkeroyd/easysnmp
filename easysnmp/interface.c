@@ -283,6 +283,9 @@ void __libraries_init()
 void __libraries_free(void* arg)
 {
     snmp_shutdown(APPNAME);
+#ifdef _WIN32
+    WSACleanup();
+#endif /* _WIN32 */
 }
 
 static int __is_numeric_oid(char *oidstr)
