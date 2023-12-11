@@ -280,7 +280,7 @@ void __libraries_init()
                        NETSNMP_OID_OUTPUT_SUFFIX);
 }
 
-static void __libraries_free(void* arg)
+void __libraries_free(void* arg)
 {
     snmp_shutdown(APPNAME);
 #ifdef _WIN32
