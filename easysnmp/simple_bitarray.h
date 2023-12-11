@@ -219,9 +219,7 @@ static inline void bitarray_print_base16(bitarray *ba)
     bitarray i;
     size_t num_limbs = bitarray_num_limbs(ba);
 
-    /* could use %zu and no cast if happy with C99 or later requirement.
-     * On 64bit windows size_t and unsigned long are different sizes, 
-     * hence cast back to unsigned long */
+    // could use %zu ?
     printf("DEBUG numbits=%lu\n", (unsigned long)ba[0]);
     printf("DEBUG sizeof(limb)=%lu\n", (unsigned long)sizeof(ba[0]));
     printf("DEBUG num_limbs=%lu\n", (unsigned long)num_limbs);
